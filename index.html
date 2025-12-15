@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Release Tracker</title>
+<style>
+  :root{--accent:#2563eb;--muted:#6b7280;--bg:#f8fafc}
+  body{font-family:Inter,system-ui,Segoe UI,Roboto,Arial; margin:0; background:var(--bg); color:#111}
+  .app{max-width:1100px;margin:28px auto;padding:20px;background:#fff;border-radius:8px;box-shadow:0 6px 18px rgba(15,23,42,0.06)}
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+  h1{font-size:20px;margin:0}
+  .controls{display:flex;gap:8px;align-items:center}
+  button{background:var(--accent);color:#fff;border:0;padding:8px 12px;border-radius:6px;cursor:pointer}
+  button.ghost{background:transparent;color:var(--accent);border:1px solid rgba(37,99,235,0.12)}
+  .form-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  input[type="text"],select,input[type="date"],textarea{padding:8px;border:1px solid #e6e9ef;border-radius:6px;min-width:140px}
+  table{width:100%;border-collapse:collapse;margin-top:12px}
+  th,td{padding:10px;border-bottom:1px solid #eef2f7;text-align:left}
+  th{cursor:pointer;background:#fbfdff}
+  .small{font-size:13px;color:var(--muted)}
+  .help{margin-left:6px;color:var(--muted);font-size:13px}
+  .filters{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+  .right{margin-left:auto;display:flex;gap:8px}
+  .modal{position:fixed;inset:0;background:rgba(2,6,23,0.45);display:flex;align-items:center;justify-content:center}
+  .card{background:#fff;padding:18px;border-radius:8px;min-width:320px;max-width:720px}
+  .muted{color:var(--muted)}
+  .error{color:#b91c1c;font-size:13px}
+  .icon{display:inline-block;width:18px;height:18px;text-align:center;border-radius:4px;background:#eef2ff;color:var(--accent);font-weight:600;margin-right:6px}
+  .link{color:var(--accent);cursor:pointer;text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="app" role="application" aria-label="Release Tracker">
+  <header>
+    <div>
+      <h1>Release Tracker</h1>
+      <div class="small muted">Manage product releases — semantic version validation, export, and filters</div>
+    </div>
+    <div class="controls">
+      <button id="btnManageProducts" title="Edit the product list">Manage Products</button>
+      <button id="btnExportCsv" title="Export table as CSV">Export CSV</button>
+      <button id="btnExportJson" class="ghost" title="Export data as JSON for sharing">Export JSON</button>
+      <button id="btnImportJson" class="ghost" title="Import JSON to restore or share data">Import JSON</button>
+    </div>
+  </header>
+
+  <section aria-labelledby="add-release">
+    <h2 id="add-release" class="small">Add / Edit Release</h2>
+    <form id="releaseForm" class="form-row" onsubmit="return false;">
+      <select id="productSelect" required title="Select product from list (manage via Manage Products)">
+      </select>
+      <input id="versionInput" type="text" placeholder="Version (e.g., 1.0 or 1.2.3)" required title="Semantic version: major.minor or major.minor.patch" />
+      <input id="dateInput" type="date" required title="Select release date" />
+      <input id="ownerInput" type="text" placeholder="Owner (optional)" />
+      <input id="notesInput" type="text" placeholder="Notes (optional)" style="flex:1" />
+      <button id="saveBtn">Save</button>
+    </form>
+    <div class="small muted">Version validation: <span id="versionHint">major.minor or major.minor.patch</span></div>
+    <div id="formError" class="error" role="alert" style="display:none"></div>
+  </section>
+
+  <hr style="margin:16px 0">
+
+  <section>
+    <div class="filters">
+      <label class="small">Filter:</label>
+      <select id="filterProduct"><option value="">All products</option></select>
+      <input id="filterFrom" type="date" title="From date" />
+      <input id="filterTo" type="date" title="To date" />
+      <button id="btnClearFilters" class="ghost">Clear</button>
+      <div class="right">
+        <div class="small muted">Click column headers to sort</div>
+      </div>
+    </div>
+
+    <table id="releasesTable" aria-describedby="tableDesc">
+      <thead>
+        <tr>
+          <th data-key="product">Product</th>
+          <th data-key="version">Version</th>
+          <th data-key="release_date">Release Date</th>
+          <th data-key="owner">Owner</th>
+          <th data-key="notes">Notes</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <div id="tableDesc" class="small muted">Table shows saved releases. Use filters to narrow results.</div>
+  </section>
+</div>
+
+<!-- Manage Products Modal -->
+<div id="productsModal" class="modal" style="display:none" role="dialog" aria-modal="true" aria-label="Manage Products">
+  <div class="card">
+    <h3>Manage Products</h3>
+    <div class="small muted">Add or remove products. Changes update dropdowns immediately.</div>
+    <div style="margin-top:12px">
+      <input id="newProductName" type="text" placeholder="New product name" />
+      <button id="addProductBtn">Add</button>
+    </div>
+    <ul id="productsList" style="margin-top:12px"></ul>
+    <div style="margin-top:12px;display:flex;justify-content:flex-end;gap:8px">
+      <button id="closeProducts">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- Data model & persistence ---------- */
+const STORAGE_KEY = "release_tracker_v1";
+const PRODUCTS_KEY = "release_tracker_products_v1";
+
+const DEFAULT_PRODUCTS = ["Product A","Product B","Product C","Product D","Product E","Product F"];
+
+function loadProducts(){
+  const raw = localStorage.getItem(PRODUCTS_KEY);
+  if(!raw) { localStorage.setItem(PRODUCTS_KEY, JSON.stringify(DEFAULT_PRODUCTS)); return DEFAULT_PRODUCTS.slice(); }
+  try { return JSON.parse(raw); } catch(e){ return DEFAULT_PRODUCTS.slice(); }
+}
+function saveProducts(list){ localStorage.setItem(PRODUCTS_KEY, JSON.stringify(list)); }
+
+function loadData(){
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if(!raw) return [];
+  try { return JSON.parse(raw); } catch(e){ return []; }
+}
+function saveData(rows){ localStorage.setItem(STORAGE_KEY, JSON.stringify(rows)); }
+
+/* ---------- Utilities ---------- */
+function formatDateISOToMMDDYYYY(iso){
+  if(!iso) return "";
+  const d = new Date(iso);
+  if(isNaN(d)) return "";
+  const mm = String(d.getMonth()+1).padStart(2,"0");
+  const dd = String(d.getDate()).padStart(2,"0");
+  const yyyy = d.getFullYear();
+  return `${mm}/${dd}/${yyyy}`;
+}
+function dateToISOInput(dateStr){ // dateStr from input[type=date] is already yyyy-mm-dd
+  return dateStr ? dateStr : null;
+}
+
+/* Semantic version regex: allow major.minor or major.minor.patch, optional pre-release/build */
+const SEMVER_REGEX = /^(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/;
+
+/* ---------- App state ---------- */
+let releases = loadData();
+let products = loadProducts();
+let sortState = { key: "release_date", dir: "desc" };
+
+/* ---------- DOM refs ---------- */
+const productSelect = document.getElementById("productSelect");
+const versionInput = document.getElementById("versionInput");
+const dateInput = document.getElementById("dateInput");
+const ownerInput = document.getElementById("ownerInput");
+const notesInput = document.getElementById("notesInput");
+const saveBtn = document.getElementById("saveBtn");
+const formError = document.getElementById("formError");
+const releasesTableBody = document.querySelector("#releasesTable tbody");
+const filterProduct = document.getElementById("filterProduct");
+const filterFrom = document.getElementById("filterFrom");
+const filterTo = document.getElementById("filterTo");
+const btnClearFilters = document.getElementById("btnClearFilters");
+const btnExportCsv = document.getElementById("btnExportCsv");
+const btnExportJson = document.getElementById("btnExportJson");
+const btnImportJson = document.getElementById("btnImportJson");
+const btnManageProducts = document.getElementById("btnManageProducts");
+const productsModal = document.getElementById("productsModal");
+const productsList = document.getElementById("productsList");
+const newProductName = document.getElementById("newProductName");
+const addProductBtn = document.getElementById("addProductBtn");
+const closeProducts = document.getElementById("closeProducts");
+
+/* ---------- Render helpers ---------- */
+function populateProductSelects(){
+  [productSelect, filterProduct].forEach(sel=>{
+    sel.innerHTML = "";
+    if(sel === filterProduct){
+      const opt = document.createElement("option"); opt.value=""; opt.textContent="All products"; sel.appendChild(opt);
+    }
+    products.forEach((p,idx)=>{
+      const opt = document.createElement("option"); opt.value = p; opt.textContent = p; sel.appendChild(opt);
+    });
+  });
+}
+
+function renderProductsModal(){
+  productsList.innerHTML = "";
+  products.forEach((p,idx)=>{
+    const li = document.createElement("li");
+    li.innerHTML = `<strong>${escapeHtml(p)}</strong> <button data-idx="${idx}" class="ghost" style="margin-left:8px">Remove</button>`;
+    productsList.appendChild(li);
+  });
+  // attach remove handlers
+  productsList.querySelectorAll("button").forEach(btn=>{
+    btn.addEventListener("click", e=>{
+      const idx = Number(btn.getAttribute("data-idx"));
+      products.splice(idx,1);
+      saveProducts(products);
+      populateProductSelects();
+      renderProductsModal();
+    });
+  });
+}
+
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+
+function renderTable(){
+  // apply filters
+  const fp = filterProduct.value;
+  const from = filterFrom.value;
+  const to = filterTo.value;
+  let rows = releases.slice();
+  if(fp) rows = rows.filter(r=>r.product === fp);
+  if(from) rows = rows.filter(r=>r.release_date >= from);
+  if(to) rows = rows.filter(r=>r.release_date <= to);
+
+  // sort
+  rows.sort((a,b)=>{
+    const k = sortState.key;
+    let va = a[k] ?? "";
+    let vb = b[k] ?? "";
+    if(k === "release_date"){ va = a.release_date || ""; vb = b.release_date || ""; }
+    if(va < vb) return sortState.dir === "asc" ? -1 : 1;
+    if(va > vb) return sortState.dir === "asc" ? 1 : -1;
+    return 0;
+  });
+
+  releasesTableBody.innerHTML = "";
+  rows.forEach((r, idx)=>{
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(r.product)}</td>
+      <td>${escapeHtml(r.version)}</td>
+      <td>${formatDateISOToMMDDYYYY(r.release_date)}</td>
+      <td>${escapeHtml(r.owner||"")}</td>
+      <td>${escapeHtml(r.notes||"")}</td>
+      <td>
+        <button data-idx="${idx}" class="editBtn ghost">Edit</button>
+        <button data-idx="${idx}" class="delBtn ghost">Delete</button>
+      </td>
+    `;
+    releasesTableBody.appendChild(tr);
+  });
+
+  // attach actions (note: idx refers to filtered rows; map back to original by matching id)
+  releasesTableBody.querySelectorAll(".editBtn").forEach(btn=>{
+    btn.addEventListener("click", e=>{
+      const idx = Number(btn.getAttribute("data-idx"));
+      const row = rows[idx];
+      // populate form for editing: we will remove original and let save create new (simple approach)
+      versionInput.value = row.version;
+      dateInput.value = row.release_date;
+      ownerInput.value = row.owner || "";
+      notesInput.value = row.notes || "";
+      productSelect.value = row.product;
+      // remove original
+      const origIndex = releases.findIndex(rr => rr.id === row.id);
+      if(origIndex >= 0) releases.splice(origIndex,1);
+      saveData(releases);
+      renderTable();
+    });
+  });
+  releasesTableBody.querySelectorAll(".delBtn").forEach(btn=>{
+    btn.addEventListener("click", e=>{
+      const idx = Number(btn.getAttribute("data-idx"));
+      const row = rows[idx];
+      if(!confirm(`Delete release ${row.product} ${row.version} on ${formatDateISOToMMDDYYYY(row.release_date)}?`)) return;
+      const origIndex = releases.findIndex(rr => rr.id === row.id);
+      if(origIndex >= 0) releases.splice(origIndex,1);
+      saveData(releases);
+      renderTable();
+    });
+  });
+}
+
+/* ---------- Form actions ---------- */
+saveBtn.addEventListener("click", ()=>{
+  formError.style.display = "none";
+  const product = productSelect.value;
+  const version = versionInput.value.trim();
+  const release_date = dateInput.value; // yyyy-mm-dd
+  const owner = ownerInput.value.trim();
+  const notes = notesInput.value.trim();
+
+  if(!product){ formError.textContent = "Please select a product."; formError.style.display="block"; return; }
+  if(!SEMVER_REGEX.test(version)){ formError.textContent = "Version must be semantic: e.g., 1.0 or 1.2.3 (pre-release/build allowed)."; formError.style.display="block"; return; }
+  if(!release_date){ formError.textContent = "Please select a release date."; formError.style.display="block"; return; }
+
+  const newRow = {
+    id: Date.now() + Math.floor(Math.random()*1000),
+    product, version, release_date, owner, notes
+  };
+  releases.push(newRow);
+  saveData(releases);
+  // clear form
+  versionInput.value = ""; dateInput.value = ""; ownerInput.value = ""; notesInput.value = "";
+  renderTable();
+});
+
+/* ---------- Sorting ---------- */
+document.querySelectorAll("#releasesTable th[data-key]").forEach(th=>{
+  th.addEventListener("click", ()=>{
+    const key = th.getAttribute("data-key");
+    if(sortState.key === key) sortState.dir = sortState.dir === "asc" ? "desc" : "asc";
+    else { sortState.key = key; sortState.dir = "asc"; }
+    renderTable();
+  });
+});
+
+/* ---------- Filters ---------- */
+btnClearFilters.addEventListener("click", ()=>{
+  filterProduct.value = ""; filterFrom.value = ""; filterTo.value = ""; renderTable();
+});
+[filterProduct, filterFrom, filterTo].forEach(el=>el.addEventListener("change", renderTable));
+
+/* ---------- Export CSV & JSON ---------- */
+function download(filename, content, mime){
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 500);
+}
+
+btnExportCsv.addEventListener("click", ()=>{
+  const rows = releases.slice();
+  const header = ["Product","Version","Release Date","Owner","Notes"];
+  const lines = [header.join(",")];
+  rows.forEach(r=>{
+    const cells = [
+      `"${r.product.replace(/"/g,'""')}"`,
+      `"${r.version.replace(/"/g,'""')}"`,
+      `"${formatDateISOToMMDDYYYY(r.release_date)}"`,
+      `"${(r.owner||"").replace(/"/g,'""')}"`,
+      `"${(r.notes||"").replace(/"/g,'""')}"`
+    ];
+    lines.push(cells.join(","));
+  });
+  download(`release-tracker-${new Date().toISOString().slice(0,10)}.csv`, lines.join("\n"), "text/csv;charset=utf-8;");
+});
+
+btnExportJson.addEventListener("click", ()=>{
+  const payload = { products, releases, exported_at: new Date().toISOString() };
+  download(`release-tracker-${new Date().toISOString().slice(0,10)}.json`, JSON.stringify(payload, null, 2), "application/json");
+});
+
+btnImportJson.addEventListener("click", ()=>{
+  const input = document.createElement("input"); input.type="file"; input.accept=".json,application/json";
+  input.addEventListener("change", async (e)=>{
+    const f = input.files[0]; if(!f) return;
+    const txt = await f.text();
+    try{
+      const obj = JSON.parse(txt);
+      if(Array.isArray(obj.releases)) releases = obj.releases;
+      if(Array.isArray(obj.products)) products = obj.products;
+      saveData(releases); saveProducts(products);
+      populateProductSelects(); renderProductsModal(); renderTable();
+      alert("Imported successfully.");
+    }catch(err){ alert("Invalid JSON file."); }
+  });
+  input.click();
+});
+
+/* ---------- Manage products modal ---------- */
+btnManageProducts.addEventListener("click", ()=>{ productsModal.style.display = "flex"; renderProductsModal(); });
+closeProducts.addEventListener("click", ()=>{ productsModal.style.display = "none"; });
+addProductBtn.addEventListener("click", ()=>{
+  const name = newProductName.value.trim();
+  if(!name){ alert("Enter a product name."); return; }
+  if(products.includes(name)){ alert("Product already exists."); return; }
+  products.push(name); saveProducts(products); populateProductSelects(); renderProductsModal(); newProductName.value="";
+});
+
+/* ---------- Init ---------- */
+function init(){
+  populateProductSelects();
+  renderTable();
+}
+init();
+
+/* ---------- Accessibility & small help tooltips ---------- */
+// Add title attributes already present; show version hint
+document.getElementById("versionHint").title = "Allowed: 1.0 or 1.2.3; pre-release like 1.2.3-alpha allowed";
+
+/* ---------- Notes for future: simple "share" via JSON import/export; for real-time collaboration use a backend or Firebase ---------- */
+</script>
+</body>
+</html>
